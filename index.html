@@ -510,7 +510,7 @@ const PLAN = [
    ESTADO (salvo no aparelho)
    ========================================================= */
 const LS = 'enxoval.v1';
-function defaults(){ return {have:{},hidden:{},custom:{},edits:{},links:[],plan:{},planWeek:{},diary:{},phase:1,settings:{name:'',role:'papai',dpp:'2027-03-20',baby:'Pedro',sex:'m'},onboarded:false}; }
+function defaults(){ return {have:{},hidden:{},custom:{},edits:{},links:[],plan:{},planWeek:{},diary:{},phase:1,settings:{name:'',role:'papai',dpp:'',baby:'',sex:''},onboarded:false}; }
 function load(){ try{ const s = JSON.parse(localStorage.getItem(LS)); if(s){ const d=defaults(); return {...d,...s,settings:{...d.settings,...(s.settings||{})}}; } }catch(e){} return defaults(); }
 let S = load();
 function save(){ try{ localStorage.setItem(LS, JSON.stringify(S)); }catch(e){} }
