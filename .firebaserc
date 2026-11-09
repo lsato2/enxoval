@@ -1,1 +1,7 @@
-{ "projects": { "default": "enxoval-lucas" } }
+{
+  "projects": {
+    "default": "enxoval-lucas"
+  },
+  "targets": {},
+  "etags": {}
+}
