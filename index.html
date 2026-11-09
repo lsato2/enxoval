@@ -239,6 +239,17 @@ svg.i{width:17.5px;height:17.5px;fill:none;stroke:currentColor;stroke-width:1.5;
 .phase-box{background:#fff;border-radius:16px;padding:11px 16px;margin-bottom:9.5px;box-shadow:var(--shadow)}
 .phase-box b{display:inline-block;background:var(--gold);color:var(--gold-text);font-size:9.5px;letter-spacing:.12em;border-radius:799px;padding:3px 8px;margin-bottom:5px}
 .phase-box p{margin:0;line-height:1.5;color:#5b5162}
+/* ---------- LOGIN ---------- */
+.auth{min-height:100vh;display:flex;flex-direction:column;justify-content:center;padding:calc(var(--safe-top) + 24px) 24px 40px;max-width:420px;margin:0 auto}
+.auth-logo{width:64px;height:64px;border-radius:20px;background:linear-gradient(160deg,var(--head1),var(--head2));color:#fff;display:grid;place-items:center;margin:0 auto 14px}
+.auth-logo svg.i{width:32px;height:32px}
+.auth-title{font-family:var(--serif);font-weight:600;font-size:26px;text-align:center;margin:0}
+.auth-sub{text-align:center;color:var(--muted);margin:6px 0 18px;line-height:1.45}
+.auth-seg{background:#f2e7f0;border-radius:999px;padding:4px;margin-bottom:16px}
+.auth-msg{color:#b4485b;font-size:14px;margin:-4px 4px 10px;line-height:1.4}
+.auth-link{display:block;margin:14px auto 0;color:var(--purple);font-weight:700;font-size:14px}
+.auth-foot{text-align:center;color:var(--muted);font-size:13px;line-height:1.45;margin-top:22px}
+.btn-primary:disabled{opacity:.6}
 /* ---------- PLANO ---------- */
 .plan-hero{margin:calc(var(--safe-top) + 13px) 13px 0;background:linear-gradient(140deg,#e7dcf5,#f4eefa);border-radius:24px;padding:19px 20px 16px}
 .ph-kicker{font-size:10.5px;letter-spacing:.2em;font-weight:600;color:var(--purple-strong)}
@@ -513,7 +524,116 @@ const LS = 'enxoval.v1';
 function defaults(){ return {have:{},hidden:{},custom:{},edits:{},links:[],plan:{},planWeek:{},diary:{},phase:1,settings:{name:'',role:'papai',dpp:'',baby:'',sex:''},onboarded:false}; }
 function load(){ try{ const s = JSON.parse(localStorage.getItem(LS)); if(s){ const d=defaults(); return {...d,...s,settings:{...d.settings,...(s.settings||{})}}; } }catch(e){} return defaults(); }
 let S = load();
-function save(){ try{ localStorage.setItem(LS, JSON.stringify(S)); }catch(e){} }
+
+/* ---------- Conta e sincronização (Firebase) ---------- */
+const AUTH = {ready:false, user:null, fid:null, fam:null, error:''};
+let famUnsub = null, synced = null, needRender = false;
+const clone = o => JSON.parse(JSON.stringify(o));
+const PREFS = () => 'enxoval.prefs.' + (AUTH.user ? AUTH.user.uid : 'anon');
+function sharedView(){ return {have:S.have, hidden:S.hidden, custom:S.custom, edits:S.edits, plan:S.plan, planWeek:S.planWeek, diary:S.diary, links:S.links,
+  info:{dpp:S.settings.dpp||'', baby:S.settings.baby||'', sex:S.settings.sex||''}}; }
+function savePrefs(){ try{ localStorage.setItem(PREFS(), JSON.stringify({phase:S.phase, onboarded:S.onboarded, name:S.settings.name, role:S.settings.role})); }catch(e){} }
+function loadPrefs(){ try{ const p=JSON.parse(localStorage.getItem(PREFS())); if(p){ S.phase=p.phase||1; S.onboarded=!!p.onboarded; S.settings.name=p.name||''; S.settings.role=p.role||'papai'; } }catch(e){} }
+/* Envia só o que mudou (campo a campo) para os dois poderem editar ao mesmo tempo */
+function pushChanges(){
+  if(!AUTH.fid || !synced || !window.fb) return;
+  const {FieldPath, deleteField, updateDoc, doc} = fb;
+  const cur = clone(sharedView()), args = [];
+  for(const k of Object.keys(cur)){
+    if(k==='links'){ if(JSON.stringify(cur.links)!==JSON.stringify(synced.links||[])) args.push(new FieldPath('links'), cur.links); continue; }
+    const a = synced[k]||{}, b = cur[k]||{};
+    for(const sub of new Set([...Object.keys(a), ...Object.keys(b)])){
+      if(JSON.stringify(a[sub])!==JSON.stringify(b[sub])) args.push(new FieldPath(k, sub), b[sub]===undefined ? deleteField() : b[sub]);
+    }
+  }
+  synced = cur;
+  if(args.length) updateDoc(doc(fb.db,'families',AUTH.fid), ...args).catch(e=>{ console.error(e); toast('Não foi possível salvar'); });
+}
+function save(){ savePrefs(); pushChanges(); }
+function applyRemote(d){
+  S.have=d.have||{}; S.hidden=d.hidden||{}; S.custom=d.custom||{}; S.edits=d.edits||{}; S.plan=d.plan||{};
+  S.planWeek=d.planWeek||{}; S.diary=d.diary||{}; S.links=d.links||[];
+  const i=d.info||{}; S.settings.dpp=i.dpp||''; S.settings.baby=i.baby||''; S.settings.sex=i.sex||'';
+  AUTH.fam = {members:d.members||[], memberEmails:d.memberEmails||[], memberNames:d.memberNames||{}, invites:d.invites||[]};
+  synced = clone(sharedView());
+}
+function safeRender(){
+  const a=document.activeElement;
+  if(a && app.contains(a) && /INPUT|TEXTAREA|SELECT/.test(a.tagName)){ needRender=true; return; }
+  render();
+}
+document.addEventListener('focusout', ()=>{ if(needRender){ needRender=false; setTimeout(()=>{ const a=document.activeElement; if(!(a && app.contains(a) && /INPUT|TEXTAREA|SELECT/.test(a.tagName))) render(); else needRender=true; },50); } });
+
+async function openFamily(fid){
+  const {doc, onSnapshot} = fb;
+  if(famUnsub) famUnsub();
+  AUTH.fid = fid; synced = null;
+  let first = true;
+  famUnsub = onSnapshot(doc(fb.db,'families',fid), snap=>{
+    if(!snap.exists()){ return; }
+    applyRemote(snap.data());
+    if(first){ first=false; loadPrefs(); render(); if(!S.onboarded) setTimeout(sheetWelcome, 300); checkInvites(); }
+    else safeRender();
+  }, err=>{ console.error(err); AUTH.error='Não foi possível abrir o enxoval.'; render(); });
+}
+async function resolveFamily(user){
+  const {doc, getDoc, setDoc, collection, serverTimestamp} = fb;
+  const email = (user.email||'').toLowerCase();
+  const uref = doc(fb.db,'users',user.uid);
+  let fid = null;
+  try{ const u = await getDoc(uref); if(u.exists()) fid = u.data().familyId || null; }catch(e){}
+  if(fid){ try{ await getDoc(doc(fb.db,'families',fid)); }catch(e){ fid=null; } }
+  if(!fid){
+    const inv = await findInvite(email);
+    if(inv){ await joinFamily(inv.id, user); fid = inv.id; }
+    else {
+      /* cria o enxoval levando o que já estava salvo neste aparelho */
+      const local = load();
+      const ref = doc(collection(fb.db,'families'));
+      S = {...S, ...local, settings:{...S.settings, dpp:local.settings.dpp, baby:local.settings.baby, sex:local.settings.sex}};
+      await setDoc(ref, {members:[user.uid], memberEmails:[email], memberNames:{}, invites:[], createdAt:serverTimestamp(), ...clone(sharedView())});
+      fid = ref.id;
+    }
+    await setDoc(uref, {familyId:fid, email}, {merge:true});
+  }
+  openFamily(fid);
+}
+async function findInvite(email){
+  const {collection, query, where, getDocs} = fb;
+  if(!email) return null;
+  try{ const qs = await getDocs(query(collection(fb.db,'families'), where('invites','array-contains', email))); return qs.empty ? null : qs.docs[0]; }
+  catch(e){ console.error(e); return null; }
+}
+async function joinFamily(fid, user){
+  const {doc, updateDoc, arrayUnion, arrayRemove} = fb;
+  const email=(user.email||'').toLowerCase();
+  await updateDoc(doc(fb.db,'families',fid), {members:arrayUnion(user.uid), memberEmails:arrayUnion(email), invites:arrayRemove(email)});
+}
+/* Convite recebido depois de já ter criado a conta */
+async function checkInvites(){
+  const inv = await findInvite((AUTH.user.email||'').toLowerCase());
+  if(!inv || inv.id===AUTH.fid) return;
+  const d = inv.data(); const who = (d.memberEmails||[])[0] || 'outra pessoa';
+  const s = openSheet(`<h2>Você recebeu um convite</h2><p class="lead"><b>${esc(who)}</b> convidou você para colaborar no enxoval do bebê.</p>
+    <p class="lead">Ao aceitar, você passa a ver e editar o enxoval compartilhado. O que estiver no seu enxoval atual não é copiado.</p>
+    <button class="btn-primary" id="iv-ok">Aceitar convite</button><button class="btn-ghost" id="iv-no">Agora não</button>`);
+  s.querySelector('#iv-no').onclick=()=>closeSheet();
+  s.querySelector('#iv-ok').onclick=async()=>{
+    try{ await joinFamily(inv.id, AUTH.user); await fb.setDoc(fb.doc(fb.db,'users',AUTH.user.uid), {familyId:inv.id}, {merge:true}); closeSheet(); toast('Convite aceito'); openFamily(inv.id); }
+    catch(e){ console.error(e); toast('Não foi possível aceitar'); }
+  };
+}
+function startFirebase(){
+  fb.onAuthStateChanged(fb.auth, async user=>{
+    if(famUnsub){ famUnsub(); famUnsub=null; }
+    AUTH.user = user; AUTH.fid = null; AUTH.ready = true; AUTH.error='';
+    S = defaults();
+    if(!user){ render(); return; }
+    render();
+    try{ await resolveFamily(user); }catch(e){ console.error(e); AUTH.error='Não foi possível preparar o enxoval. Verifique a internet e tente de novo.'; render(); }
+  });
+}
+
 
 const slug = s => s.normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
 const esc = s => String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -588,6 +708,12 @@ window.addEventListener('hashchange', ()=>{ closeSheet(true); const r=parseRoute
 function render(){
   const y = window.scrollY;
   const r = route.name;
+  if(!AUTH.ready || !AUTH.user || !AUTH.fid){
+    document.getElementById('nav').style.display='none'; renderCompact(true);
+    app.innerHTML = !AUTH.ready ? viewSplash(AUTH.error||'Carregando...') : !AUTH.user ? viewLogin() : viewSplash(AUTH.error||'Preparando o enxoval...');
+    return;
+  }
+  document.getElementById('nav').style.display='';
   let html='';
   if(r==='home') html = viewHome();
   else if(r==='lista') html = viewList(listById(route.arg)||LISTS[0]);
@@ -665,8 +791,9 @@ function quickCard(){
     <button data-act="cha"><div class="qi">${icon('gift')}</div><div><div class="q-t">Chá de bebê</div><div class="q-s">compartilhe</div></div></button>
   </div>`;
 }
-function renderCompact(){
+function renderCompact(off){
   const c = document.getElementById('compact');
+  if(off){ c.innerHTML=''; c.classList.remove('show'); return; }
   if(route.name==='plano' && gestWeek()!=null){
     const n = babyName() || 'Bebê';
     c.innerHTML = `<div class="plan-compact"><div class="avatar pc-av">${esc(n.charAt(0).toUpperCase())}</div>
@@ -914,11 +1041,66 @@ function viewTarefa(id){
   <div class="scard">${rows || '<div class="empty">Nenhum item.</div>'}</div></section><div style="height:30px"></div>`;
 }
 
+/* ---------- LOGIN ---------- */
+let loginMode = 'entrar', loginMsg = '', loginBusy = false;
+function viewSplash(msg){
+  return `<div class="auth"><div class="auth-logo">${icon('onesie')}</div><h1 class="auth-title">Enxoval do bebê</h1><p class="auth-sub">${esc(msg)}</p>
+    ${AUTH.error?'<button class="btn-primary" data-act="retry">Tentar de novo</button>':''}</div>`;
+}
+function viewLogin(){
+  const criar = loginMode==='criar';
+  return `<div class="auth">
+    <div class="auth-logo">${icon('onesie')}</div>
+    <h1 class="auth-title">Enxoval do bebê</h1>
+    <p class="auth-sub">${criar?'Crie sua conta para montar o enxoval e compartilhar com quem você ama.':'Entre para ver e editar o enxoval de vocês.'}</p>
+    <div class="seg auth-seg"><button class="${!criar?'on':''}" data-act="login-mode" data-v="entrar">Entrar</button><button class="${criar?'on':''}" data-act="login-mode" data-v="criar">Criar conta</button></div>
+    <form id="login-form" class="auth-form" novalidate>
+      <label class="field"><span>E-mail</span><input id="l-email" type="email" autocomplete="email" inputmode="email" autocapitalize="off" placeholder="seu@email.com"></label>
+      <label class="field"><span>Senha</span><input id="l-pass" type="password" autocomplete="${criar?'new-password':'current-password'}" placeholder="${criar?'Mínimo de 6 caracteres':'Sua senha'}"></label>
+      ${loginMsg?`<p class="auth-msg">${esc(loginMsg)}</p>`:''}
+      <button class="btn-primary" type="submit" ${loginBusy?'disabled':''}>${loginBusy?'Aguarde...':criar?'Criar conta':'Entrar'}</button>
+      ${!criar?'<button class="auth-link" type="button" data-act="login-reset">Esqueci minha senha</button>':''}
+    </form>
+    <p class="auth-foot">Foi convidado(a)? Crie a conta com o <b>mesmo e-mail</b> do convite e o enxoval compartilhado abre automaticamente.</p>
+  </div>`;
+}
+function authError(e){
+  const c = (e && e.code)||'';
+  return ({'auth/invalid-credential':'E-mail ou senha incorretos.','auth/wrong-password':'E-mail ou senha incorretos.','auth/user-not-found':'Não existe conta com este e-mail.',
+    'auth/email-already-in-use':'Já existe uma conta com este e-mail. Toque em Entrar.','auth/weak-password':'A senha precisa ter pelo menos 6 caracteres.',
+    'auth/invalid-email':'E-mail inválido.','auth/missing-password':'Digite a senha.','auth/too-many-requests':'Muitas tentativas. Aguarde alguns minutos.',
+    'auth/network-request-failed':'Sem conexão com a internet.'})[c] || 'Não foi possível concluir. Tente de novo.';
+}
+document.addEventListener('submit', async e=>{
+  if(e.target.id!=='login-form') return;
+  e.preventDefault();
+  const email = document.getElementById('l-email').value.trim(), pass = document.getElementById('l-pass').value;
+  if(!email){ loginMsg='Digite seu e-mail.'; render(); return; }
+  loginBusy=true; loginMsg=''; render();
+  try{
+    if(loginMode==='criar') await fb.createUserWithEmailAndPassword(fb.auth, email, pass);
+    else await fb.signInWithEmailAndPassword(fb.auth, email, pass);
+    loginBusy=false;
+  }catch(err){ loginBusy=false; loginMsg=authError(err); render(); const el=document.getElementById('l-email'); if(el) el.value=email; }
+});
+
 /* ---------- VOCÊ ---------- */
 function viewVoce(){
   const hiddenCount = Object.keys(S.hidden).length;
   const wk = gestWeek();
-  return `<div class="page-h"><h1>Você</h1><p>Seus dados ficam salvos só neste aparelho.</p></div>
+  const fam = AUTH.fam || {members:[],memberEmails:[],invites:[],memberNames:{}};
+  const me = (AUTH.user.email||'').toLowerCase();
+  const members = fam.memberEmails.map(m=>`<div class="link-card"><div class="qi">${icon('people')}</div><div style="flex:1;min-width:0"><div class="lt2">${esc(fam.memberNames[m]||m)}${m===me?' (você)':''}</div><div class="ls2">${fam.memberNames[m]?esc(m):'Colaborador(a)'}</div></div></div>`).join('');
+  const invites = fam.invites.map(m=>`<div class="link-card"><div class="qi">${icon('link')}</div><div style="flex:1;min-width:0"><div class="lt2">${esc(m)}</div><div class="ls2">Convite pendente</div></div>
+     <button class="icon-btn" data-act="share-invite" data-v="${esc(m)}" aria-label="Enviar">${icon('gift')}</button><button class="icon-btn" data-act="del-invite" data-v="${esc(m)}" aria-label="Cancelar">${icon('trash')}</button></div>`).join('');
+  return `<div class="page-h"><h1>Você</h1><p>Conectado como ${esc(AUTH.user.email)}</p></div>
+  <div class="box">
+    <h3 class="serif" style="margin:0 0 4px;font-weight:600;font-size:17px">Compartilhar o enxoval</h3>
+    <p class="s-sub" style="margin:0 0 8px">Quem você convidar vê e edita o mesmo enxoval, em tempo real.</p>
+    ${members}${invites}
+    <label class="field" style="margin-top:12px"><span>Convidar por e-mail</span><input id="inv-email" type="email" inputmode="email" autocapitalize="off" placeholder="email@da-esposa.com"></label>
+    <button class="btn-primary" data-act="invite">Enviar convite</button>
+  </div>
   <div class="box">
     <label class="field"><span>Seu nome</span><input id="f-name" value="${esc(S.settings.name)}" placeholder="Como quer ser chamado(a)?"></label>
     <label class="field"><span>Você é</span><select id="f-role"><option value="papai" ${S.settings.role==='papai'?'selected':''}>Papai</option><option value="mamae" ${S.settings.role==='mamae'?'selected':''}>Mamãe</option></select></label>
@@ -928,14 +1110,15 @@ function viewVoce(){
     <button class="btn-primary" data-act="save-settings">Salvar</button>
   </div>
   <div class="box">
-    <h3 class="serif" style="margin:0 0 4px;font-weight:600;font-size:20px">Backup e sincronização</h3>
-    <p class="s-sub" style="margin:0 0 6px">Exporte o arquivo para guardar uma cópia ou para importar no celular de outra pessoa.</p>
+    <h3 class="serif" style="margin:0 0 4px;font-weight:600;font-size:17px">Backup</h3>
+    <p class="s-sub" style="margin:0 0 6px">O enxoval fica salvo na nuvem. Se quiser, exporte uma cópia em arquivo.</p>
     <button class="btn-ghost" data-act="export">Exportar backup</button>
     <button class="btn-ghost" data-act="import">Importar backup</button>
     <input type="file" id="f-import" accept="application/json,.json" hidden>
   </div>
   <div class="box">
     ${hiddenCount?`<button class="btn-ghost" data-act="restore">Restaurar ${hiddenCount} ite${hiddenCount===1?'m removido':'ns removidos'}</button>`:''}
+    <button class="btn-ghost" data-act="logout">Sair da conta</button>
     <button class="btn-ghost btn-danger" data-act="reset">Apagar tudo e recomeçar</button>
   </div>`;
 }
@@ -1178,19 +1361,32 @@ function babyFields(pfx){
     <label class="field"><span>É</span><select id="${pfx}-s"><option value="m" ${S.settings.sex==='m'?'selected':''}>Menino</option><option value="f" ${S.settings.sex==='f'?'selected':''}>Menina</option><option value="" ${!S.settings.sex?'selected':''}>Ainda não sei</option></select></label></div>`;
 }
 function readBaby(root, pfx){ S.settings.baby = root.querySelector('#'+pfx+'-b').value.trim(); S.settings.sex = root.querySelector('#'+pfx+'-s').value; }
+function saveMyName(){
+  if(!AUTH.fid) return;
+  fb.updateDoc(fb.doc(fb.db,'families',AUTH.fid), new fb.FieldPath('memberNames', (AUTH.user.email||'').toLowerCase()), S.settings.name||'').catch(()=>{});
+}
+function shareInvite(email){
+  const url = location.origin + location.pathname;
+  const txt = `Oi! Te convidei para montar o enxoval do bebê comigo 💜\n\n1. Abra ${url}\n2. Toque em “Criar conta” e use este e-mail: ${email}\n3. Pronto, o enxoval abre já compartilhado.\n\nNo iPhone, abra no Safari e toque em Compartilhar → Adicionar à Tela de Início.`;
+  const s = openSheet(`<h2>Convite criado</h2><p class="lead">Agora é só avisar ${esc(email)}. Envie esta mensagem:</p>
+    <div class="share-text">${esc(txt)}</div>
+    ${navigator.share?'<button class="btn-primary" id="si-share">Enviar mensagem</button>':''}
+    <button class="${navigator.share?'btn-ghost':'btn-primary'}" id="si-copy">Copiar mensagem</button>`);
+  const sh=s.querySelector('#si-share'); if(sh) sh.onclick=()=>navigator.share({text:txt}).catch(()=>{});
+  s.querySelector('#si-copy').onclick=()=>{ (navigator.clipboard?navigator.clipboard.writeText(txt):Promise.reject()).then(()=>toast('Mensagem copiada')).catch(()=>toast('Não foi possível copiar')); };
+}
 function sheetWelcome(){
   const s = openSheet(`<h2>Bem-vindo ao seu enxoval</h2><p class="lead">Conte um pouco sobre vocês para personalizar as listas.</p>
     <label class="field"><span>Seu nome</span><input id="w-n" placeholder="Seu nome"></label>
     <label class="field"><span>Você é</span><select id="w-r"><option value="papai">Papai</option><option value="mamae">Mamãe</option></select></label>
-    <label class="field"><span>Data prevista do parto</span><input id="w-d" type="date" value="${esc(S.settings.dpp)}"></label>
-    ${babyFields('w')}
+    ${S.settings.dpp ? `<p class="lead">O enxoval ${babyName()?'d'+(S.settings.sex==='f'?'a ':'o ')+esc(babyName()):'do bebê'} já está configurado: ${gestWeek()}ª semana de gestação.</p>` :
+      `<label class="field"><span>Data prevista do parto</span><input id="w-d" type="date" value=""></label>${babyFields('w')}`}
     <button class="btn-primary" id="w-ok">Começar</button>`);
   s.querySelector('#w-ok').onclick=()=>{
     S.settings.name = s.querySelector('#w-n').value.trim();
     S.settings.role = s.querySelector('#w-r').value;
-    S.settings.dpp = s.querySelector('#w-d').value || S.settings.dpp;
-    readBaby(s,'w');
-    S.onboarded = true; save(); closeSheet(); render();
+    if(s.querySelector('#w-d')){ S.settings.dpp = s.querySelector('#w-d').value || S.settings.dpp; readBaby(s,'w'); }
+    S.onboarded = true; saveMyName(); save(); closeSheet(); render();
   };
 }
 
@@ -1229,7 +1425,24 @@ document.addEventListener('click', e=>{
       S.settings.role = document.getElementById('f-role').value;
       S.settings.dpp = document.getElementById('f-dpp').value || S.settings.dpp;
       readBaby(document,'f');
-      S.onboarded = true; save(); render(); toast('Dados salvos'); break;
+      S.onboarded = true; save(); saveMyName(); render(); toast('Dados salvos'); break;
+    case 'logout': if(confirm('Sair da conta neste aparelho?')){ fb.signOut(fb.auth); location.hash='#/'; } break;
+    case 'retry': location.reload(); break;
+    case 'login-mode': loginMode=b.dataset.v; loginMsg=''; render(); break;
+    case 'login-reset': {
+      const email=(document.getElementById('l-email')||{}).value||'';
+      if(!email.trim()){ loginMsg='Digite seu e-mail acima e toque de novo em “Esqueci minha senha”.'; render(); break; }
+      fb.sendPasswordResetEmail(fb.auth, email.trim()).then(()=>{ loginMsg='Enviamos um e-mail para redefinir a senha.'; render(); document.getElementById('l-email').value=email; })
+        .catch(err=>{ loginMsg=authError(err); render(); });
+      break; }
+    case 'invite': {
+      const el=document.getElementById('inv-email'); const email=(el.value||'').trim().toLowerCase();
+      if(!/^\S+@\S+\.\S+$/.test(email)){ toast('Digite um e-mail válido'); el.focus(); break; }
+      if(AUTH.fam.memberEmails.includes(email)){ toast('Essa pessoa já participa'); break; }
+      fb.updateDoc(fb.doc(fb.db,'families',AUTH.fid), {invites: fb.arrayUnion(email)}).then(()=>{ el.value=''; shareInvite(email); }).catch(()=>toast('Não foi possível convidar'));
+      break; }
+    case 'share-invite': shareInvite(b.dataset.v); break;
+    case 'del-invite': fb.updateDoc(fb.doc(fb.db,'families',AUTH.fid), {invites: fb.arrayRemove(b.dataset.v)}).catch(()=>toast('Erro')); break;
     case 'export': {
       const blob = new Blob([JSON.stringify(S,null,1)], {type:'application/json'});
       const file = new File([blob], 'enxoval-backup.json', {type:'application/json'});
@@ -1258,10 +1471,30 @@ render = function(){
   _render();
 };
 
+S = defaults();
 render();
-if(route.name==='busca') setTimeout(()=>{ const q=document.getElementById('q'); q&&q.focus(); },100);
-if(!S.onboarded) setTimeout(sheetWelcome, 400);
+if(window.fb) startFirebase(); else window.addEventListener('fb-ready', startFirebase, {once:true});
+setTimeout(()=>{ if(!window.fb){ AUTH.ready=false; AUTH.error='Não foi possível conectar. Verifique a internet.'; render(); } }, 15000);
 if('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(()=>{});
+</script>
+<script type="module">
+const B = './vendor/firebase/'; /* Firebase JS SDK 10.12.2 (cópia local) */
+const [{ initializeApp }, A, F] = await Promise.all([import(B+'firebase-app.js'), import(B+'firebase-auth.js'), import(B+'firebase-firestore.js')]);
+const app = initializeApp({
+  apiKey: 'AIzaSyBmz3K7NWgaQnXgY9jFFkvP1gG4B2sx5uU',
+  authDomain: 'enxoval-lucas.firebaseapp.com',
+  projectId: 'enxoval-lucas',
+  storageBucket: 'enxoval-lucas.firebasestorage.app',
+  messagingSenderId: '1033291510242',
+  appId: '1:1033291510242:web:e062a1682fb832302e09bb'
+});
+/* só e-mail e senha: sem o resolvedor de pop-up (evita carregar apis.google.com) */
+const auth = A.initializeAuth(app, { persistence: [A.indexedDBLocalPersistence, A.browserLocalPersistence] });
+let db;
+try { db = F.initializeFirestore(app, { localCache: F.persistentLocalCache({ tabManager: F.persistentMultipleTabManager() }) }); }
+catch (e) { db = F.getFirestore(app); }
+window.fb = { auth, db, ...A, ...F };
+window.dispatchEvent(new Event('fb-ready'));
 </script>
 </body>
 </html>

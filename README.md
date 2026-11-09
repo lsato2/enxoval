@@ -4,8 +4,9 @@ App web (PWA) para organizar o enxoval do bebê: listas por categoria, progresso
 (Fase 1 = essenciais para o parto, Fase 2 = enxoval completo), mala da maternidade,
 links salvos, lista para o chá de bebê e plano por semana de gestação.
 
-Tudo fica salvo no próprio celular (localStorage). Use **Você → Exportar/Importar backup**
-para guardar uma cópia ou passar os dados para outro aparelho.
+Login com e-mail e senha (Firebase Authentication). O enxoval fica no Firestore e é
+compartilhado em tempo real entre os membros: em **Você → Compartilhar o enxoval**, convide
+pela conta de e-mail; a pessoa cria a conta com esse e-mail e entra direto no mesmo enxoval.
 
 ## Endereço
 
@@ -20,10 +21,11 @@ https://enxoval-lucas.web.app (Firebase Hosting, projeto `enxoval-lucas`)
 ## Publicação
 
 ```
-firebase deploy --only hosting
+firebase deploy --only hosting,firestore
 ```
 
-A configuração está em `firebase.json` e `.firebaserc`.
+A configuração está em `firebase.json` e `.firebaserc`; as regras de acesso em `firestore.rules`.
+O SDK do Firebase (10.12.2) fica em `vendor/firebase/`, copiado do pacote npm oficial.
 
 ## Arquivos
 
